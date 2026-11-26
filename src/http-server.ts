@@ -10,6 +10,7 @@ import {
 
 import { config } from "./config.ts";
 import { createMcpServer } from "./server.ts";
+import type { MobilityProvider } from "./providers/types.ts";
 
 import type { AuthConfig } from "./auth/config.ts";
 
@@ -28,8 +29,11 @@ import {
 export function createHttpServer(
   authConfig: AuthConfig,
   verifyToken: TokenVerifier = createTokenVerifier(authConfig),
+  provider?: MobilityProvider,
 ) {
-  const mcpHandler = createMcpHandler(createMcpServer);
+  const mcpHandler = createMcpHandler(
+    () => createMcpServer(provider),
+  );
   const nodeHandler = toNodeHandler(mcpHandler);
 
   const validateHost = hostHeaderValidation([
