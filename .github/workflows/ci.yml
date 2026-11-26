@@ -45,92 +45,21 @@ jobs:
             --tag mrcsx-mobility:ci \
             .
 
-      - name: Start test container
+      - name: Verify fail-closed container startup
         run: |
-          docker run -d \
-            --name mobility-ci \
-            --init \
-            --read-only \
-            --cap-drop=ALL \
-            --security-opt=no-new-privileges:true \
-            --memory=256m \
-            --cpus=1 \
-            --pids-limit=128 \
-            -e MOBILITY_PUBLIC_HOST=mobility.mrcsx.de \
-            -p 127.0.0.1:3100:3100 \
-            mrcsx-mobility:ci
+          STATUS=0
 
-      - name: Wait for health endpoint
-        run: |
-          for i in $(seq 1 30)
-          do
-            if curl -fsS --max-time 2 http://127.0.0.1:3100/health
-            then
-              echo
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Health endpoint did not become available" >&2
-          exit 1
+          OUTPUT=$(docker run --rm --network none \
+            mrcsx-mobility:ci 2>&1) || STATUS=$?
 
-      - name: Test container MCP endpoint
-        run: |
-          node --input-type=module <<'JS'
-          import assert from "node:assert/strict";
-          import { randomUUID } from "node:crypto";
-          import {
-            Client,
-            StreamableHTTPClientTransport,
-          } from "@modelcontextprotocol/client";
+          test "$STATUS" -eq 1
 
-          const client = new Client({
-            name: "mobility-ci",
-            version: "0.1.0",
-          });
+          grep -q "Invalid or missing OAuth configuration" <<< "$OUTPUT"
 
-          try {
-            await client.connect(
-              new StreamableHTTPClientTransport(
-                new URL("http://127.0.0.1:3100/mcp"),
-              ),
-            );
+          echo "PASS: Container refuses to start without OAuth configuration"
 
-            const { tools } = await client.listTools();
-
-            assert.deepEqual(
-              tools.map(tool => tool.name),
-              ["mobility_ping"],
-            );
-
-            const nonce = randomUUID();
-
-            const result = await client.callTool({
-              name: "mobility_ping",
-              arguments: { nonce },
-            });
-
-            assert.notEqual(result.isError, true);
-            assert.equal(result.structuredContent?.nonce, nonce);
-            assert.equal(result.structuredContent?.status, "ok");
-            assert.equal(
-              result.structuredContent?.service,
-              "mrcsx-mobility",
-            );
-
-            console.log("Container MCP test passed");
-          } finally {
-            await client.close();
-          }
-          JS
-
-      - name: Container logs
-        if: always()
-        run: docker logs mobility-ci || true
-
-      - name: Clean up
-        if: always()
-        run: docker rm -f mobility-ci || true
+      - name: Run Docker OAuth smoke tests
+        run: bash tests/docker/run.sh mrcsx-mobility:ci
 
       - name: Save tested release image
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
