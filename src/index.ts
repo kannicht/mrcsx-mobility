@@ -2,9 +2,34 @@ import { config } from "./config.ts";
 import { loadAuthConfig } from "./auth/config.ts";
 import { createHttpServer } from "./http-server.ts";
 
-const authConfig = loadAuthConfig();
+import {
+  loadTransitousConfig,
+} from "./providers/transitous/config.ts";
 
-const { server, close } = createHttpServer(authConfig);
+import {
+  TransitousClient,
+} from "./providers/transitous/client.ts";
+
+import {
+  TransitousProvider,
+} from "./providers/transitous/provider.ts";
+
+const authConfig = loadAuthConfig();
+const transitousConfig = loadTransitousConfig();
+
+const transitousClient = new TransitousClient(
+  transitousConfig,
+);
+
+const mobilityProvider = new TransitousProvider(
+  transitousClient,
+);
+
+const { server, close } = createHttpServer(
+  authConfig,
+  undefined,
+  mobilityProvider,
+);
 
 server.listen(config.port, config.host, () => {
   const baseUrl = `http://${config.host}:${config.port}`;
@@ -12,6 +37,7 @@ server.listen(config.port, config.host, () => {
   console.log(`${config.service} v${config.version}`);
   console.log(`Mode:   ${config.mode}`);
   console.log("Auth:   OAuth 2.0 required");
+  console.log(`Provider: ${mobilityProvider.name}`);
   console.log(`Issuer: ${authConfig.issuer}`);
   console.log(`Health: ${baseUrl}/health`);
   console.log(`MCP:    ${baseUrl}/mcp`);

@@ -1,166 +1,231 @@
 # mrcsx-mobility
 
-Private, self-hosted MCP server for public transport
-information and journey planning.
+A lightweight, self-hosted Model Context Protocol (MCP) server
+for public transport integration.
 
-## Status
+**Current version:** 0.3.0
 
-Version 0.2.0
+## Features
 
-- MCP Streamable HTTP transport
+- Remote MCP server using Streamable HTTP
 - Mandatory OAuth 2.0 authentication
-- Pocket ID integration
-- Mock mobility data
-- No external transport APIs yet
+- JWT access token validation with remote JWKS
+- Explicit OAuth client and user authorization
+- Public transport stop, address and place search
+- Transitous integration
+- Provider-independent mobility data model
+- Bounded in-memory TTL/LRU cache
+- Concurrent request deduplication
+- Upstream request rate limiting
+- Hardened, non-root Docker runtime
+- Automated unit, integration and container tests
+
+## MCP tools
+
+| Tool | Description |
+| --- | --- |
+| `mobility_ping` | Connectivity check with optional nonce |
+| `mobility_search_places` | Search stops, stations, addresses and places |
+
+All MCP tools are read-only and require authentication.
+
+Journey planning, departures and real-time transport information
+are not yet implemented.
+
+### Example search
+
+```json
+{
+  "query": "Braunschweig Hauptbahnhof",
+  "type": "stop",
+  "limit": 5
+}
+```
+
+Search results contain normalized geographic information,
+provider identifiers and available transport modes.
+
+Addresses without provider identifiers return `id: null`
+and can be referenced using their coordinates.
 
 ## Architecture
 
-- TypeScript
-- Node.js 24
-- Model Context Protocol SDK v2
-- Zod
-- jose
-- Docker
-- GitHub Actions
-- GitHub Container Registry
+```mermaid
+flowchart TD
+    Client[MCP Client]
+    OAuth[OAuth Authorization Server]
+    HTTP[HTTP and MCP Server]
+    Auth[Access Token Validation]
+    Tools[MCP Tools]
+    Provider[Mobility Provider]
+    Cache[TTL/LRU Cache]
+    API[Transitous API]
 
-## Security
+    Client -->|OAuth| OAuth
+    Client -->|HTTPS / Bearer Token| HTTP
+    HTTP --> Auth
+    Auth -->|JWKS| OAuth
+    Auth --> Tools
+    Tools --> Provider
+    Provider --> Cache
+    Provider -->|Cache miss| API
+```
 
-All MCP requests require a valid OAuth access token.
-
-The server validates:
-
-- RS256 signature using remote JWKS
-- Access token type (at+jwt)
-- Issuer
-- Resource audience
-- Token expiration and issuance time
-- Authorized OAuth client ID
-- Authorized user subject
-- Required mobility:read scope
-
-Missing or invalid OAuth configuration prevents startup.
-
-There is no unauthenticated MCP mode.
-
-Host and Origin validation provide additional protection.
-
-The server never requires the OAuth client secret
-and does not intentionally log access tokens.
+The mobility provider is shared across MCP server instances
+within the application process.
 
 ## Configuration
 
-| Environment variable | Required | Default |
-| --- | --- | --- |
-| MOBILITY_HOST | No | 127.0.0.1 |
-| MOBILITY_PORT | No | 3100 |
-| MOBILITY_PUBLIC_HOST | Behind reverse proxy | - |
-| MOBILITY_OAUTH_ISSUER | Yes | - |
-| MOBILITY_OAUTH_RESOURCE | Yes | - |
-| MOBILITY_OAUTH_JWKS_URI | Yes | - |
-| MOBILITY_OAUTH_SCOPE | Yes | - |
-| MOBILITY_OAUTH_CLIENT_ID | Yes | - |
-| MOBILITY_OAUTH_ALLOWED_SUBJECT | Yes | - |
+### Server
 
-Example configuration:
+| Variable | Default |
+| --- | --- |
+| `MOBILITY_HOST` | `127.0.0.1` outside Docker |
+| `MOBILITY_PORT` | `3100` |
+| `MOBILITY_PUBLIC_HOST` | Optional |
 
-    MOBILITY_PUBLIC_HOST=mobility.example.com
-    MOBILITY_OAUTH_ISSUER=https://id.example.com
-    MOBILITY_OAUTH_RESOURCE=https://mobility.example.com/mcp
-    MOBILITY_OAUTH_JWKS_URI=https://id.example.com/.well-known/jwks.json
-    MOBILITY_OAUTH_SCOPE=mobility:read
-    MOBILITY_OAUTH_CLIENT_ID=11111111-1111-4111-8111-111111111111
-    MOBILITY_OAUTH_ALLOWED_SUBJECT=22222222-2222-4222-8222-222222222222
+### OAuth
+
+All OAuth variables are required.
+
+| Variable | Description |
+| --- | --- |
+| `MOBILITY_OAUTH_ISSUER` | HTTPS authorization server issuer |
+| `MOBILITY_OAUTH_RESOURCE` | Public HTTPS MCP resource URL |
+| `MOBILITY_OAUTH_JWKS_URI` | Authorization server JWKS URL |
+| `MOBILITY_OAUTH_SCOPE` | Required scope: `mobility:read` |
+| `MOBILITY_OAUTH_CLIENT_ID` | Authorized OAuth client UUID |
+| `MOBILITY_OAUTH_ALLOWED_SUBJECT` | Authorized user UUID |
+
+Pocket ID is the currently tested authorization server.
+
+The application validates JWT signatures, token type, issuer,
+audience, expiration, issue time, client identifier, subject
+and required scope.
+
+The server refuses to start without valid OAuth configuration.
+There is no unauthenticated MCP mode.
+
+### Transitous
+
+| Variable | Default |
+| --- | --- |
+| `MOBILITY_TRANSITOUS_BASE_URL` | `https://api.transitous.org` |
+| `MOBILITY_TRANSITOUS_USER_AGENT` | Required |
+| `MOBILITY_TRANSITOUS_TIMEOUT_MS` | `5000` |
+
+The User-Agent must identify the application, version and
+operator contact information.
+
+Example:
+
+```text
+mrcsx-mobility/0.3.0 (mailto:operator@example.org)
+```
 
 ## HTTP endpoints
 
 | Endpoint | Authentication |
 | --- | --- |
-| GET /health | Public |
-| GET /.well-known/oauth-protected-resource/mcp | Public |
-| /mcp | OAuth required |
+| `/health` | Public |
+| `/.well-known/oauth-protected-resource/mcp` | Public |
+| `/mcp` | Mandatory OAuth |
 
-The public endpoints expose only service health
-and OAuth discovery metadata.
+Deploy behind an HTTPS reverse proxy. Do not expose the
+application's plain HTTP port directly to the internet.
 
-## MCP tools
+The health endpoint indicates application availability,
+not upstream Transitous availability.
 
-### mobility_ping
+## Provider resource limits
 
-Read-only connectivity check.
+- Request timeout: 5 seconds by default
+- Maximum response size: 1 MiB
+- Maximum concurrent upstream requests: 2
+- Minimum interval between upstream requests: 1 second
+- Cache TTL: 15 minutes
+- Maximum cache entries: 128
+- Maximum serialized cached value size: 4 MiB in total
+- No automatic retries
+- No background polling
 
-Accepts an optional nonce and returns:
+These are application-level limits, not official Transitous quotas.
+They apply per provider instance.
 
-- Service name
-- Application version
-- Status
-- Operating mode
-- UTC timestamp
-- Original nonce
+## Privacy
+
+The application does not persist search queries or results.
+
+Search queries and results are temporarily cached in memory.
+Search queries are transmitted to the configured external
+mobility provider.
+
+OAuth access tokens, cookies and user identifiers are not
+forwarded to Transitous.
+
+Operators and users should avoid including unnecessary personal
+information in search requests.
+
+See the Transitous privacy policy:
+https://transitous.org/privacy/
+
+## Data sources and attribution
+
+This project uses Transitous for public transport and geographic data.
+
+- Transitous: https://transitous.org/
+- Data sources: https://transitous.org/sources/
+- API usage policy: https://transitous.org/api/
+- © OpenStreetMap contributors:
+  https://www.openstreetmap.org/copyright
+
+Applications and MCP clients displaying results must preserve
+appropriate visible attribution and comply with the applicable
+data source licenses and API usage policies.
+
+The MIT license of this project does not cover third-party
+transport or geographic data.
 
 ## Development
 
-    npm ci --ignore-scripts
-    npm run check
-    npm audit --audit-level=high
+Requirements:
 
-Start the application with a valid OAuth configuration:
+- Node.js 24
+- npm
+- Docker and OpenSSL for container smoke tests
 
-    npm run dev
+Install dependencies:
 
-## Docker testing
+```bash
+npm ci --ignore-scripts
+```
 
-    docker build -t mrcsx-mobility:ci .
-    bash tests/docker/run.sh mrcsx-mobility:ci
+Run type checking and automated tests:
 
-The Docker smoke tests create an isolated test environment
-with temporary RSA keys, TLS certificates and access tokens.
+```bash
+npm run check
+```
 
-No production credentials or external identity providers
-are required for automated tests.
+Build the container and execute smoke tests:
 
-TLS verification remains enabled.
+```bash
+docker build -t mrcsx-mobility:dev .
+bash tests/docker/run.sh mrcsx-mobility:dev
+```
 
-## Release process
-
-GitHub Actions runs:
-
-1. Dependency installation
-2. Security audit
-3. Type checking
-4. Automated integration and security tests
-5. Docker image build
-6. Fail-closed startup verification
-7. Authenticated Docker smoke tests
-
-Version tags trigger publication of the exact tested
-Docker image to the private GitHub Container Registry.
-
-## Deployment
-
-Production deployment is managed by mrcsx-infra.
-
-Container images are pinned by digest.
-
-OAuth configuration is supplied through environment
-variables in the production Compose configuration.
-
-The MCP endpoint must not be exposed without verified
-authentication enforcement.
+Automated tests use simulated OAuth and Transitous endpoints.
+They do not require access to the public Transitous API.
 
 ## Roadmap
 
-- [x] MCP connectivity proof of concept
-- [x] Private container registry
-- [x] Automated deployment
-- [x] Mandatory OAuth authentication
-- [ ] Production Pocket ID and ChatGPT integration verified
-- [ ] Transitous integration
-- [ ] Stop and station search
+- [x] v0.1.0: MCP connectivity
+- [x] v0.2.0: Mandatory OAuth authentication
+- [x] v0.3.0: Transitous and geographic search
 - [ ] Journey planning
-- [ ] Real-time departures
-- [ ] Calendar integration
+- [ ] Departure and arrival information
+- [ ] Real-time transport information
+- [ ] Additional provider implementations
 
 ## License
 
-Private project. Not licensed for redistribution.
+MIT. See [LICENSE](LICENSE).

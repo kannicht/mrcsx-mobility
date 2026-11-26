@@ -6,8 +6,8 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 
 export const config = {
   service: "mrcsx-mobility",
-  version: "0.2.0",
-  mode: "mock",
+  version: "0.3.0",
+  mode: "live",
   host: process.env.MOBILITY_HOST ?? "127.0.0.1",
   port,
   allowedHostnames: [

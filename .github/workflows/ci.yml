@@ -58,7 +58,7 @@ jobs:
 
           echo "PASS: Container refuses to start without OAuth configuration"
 
-      - name: Run Docker OAuth smoke tests
+      - name: Run Docker OAuth and Transitous smoke tests
         run: bash tests/docker/run.sh mrcsx-mobility:ci
 
       - name: Save tested release image

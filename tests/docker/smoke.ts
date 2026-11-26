@@ -11,6 +11,10 @@ import {
 
 import { config } from "../../src/config.ts";
 
+import {
+  searchPlacesResultSchema,
+} from "../../src/providers/types.ts";
+
 const directory = process.argv[2];
 const baseUrl = process.argv[3];
 
@@ -35,7 +39,7 @@ assert.deepEqual(await health.json(), {
   service: config.service,
   version: config.version,
   status: "ok",
-  mode: "mock",
+  mode: "live",
 });
 
 console.log("PASS: Health endpoint");
@@ -124,8 +128,8 @@ try {
   const { tools } = await client.listTools();
 
   assert.deepEqual(
-    tools.map((tool) => tool.name),
-    ["mobility_ping"],
+    tools.map((tool) => tool.name).sort(),
+    ["mobility_ping", "mobility_search_places"],
   );
 
   console.log("PASS: Tool discovery");
@@ -151,6 +155,104 @@ try {
   assert.equal(data.nonce, nonce);
 
   console.log("PASS: Authenticated mobility_ping");
+
+  const search = await client.callTool({
+    name: "mobility_search_places",
+    arguments: {
+      query: "Braunschweig Hauptbahnhof",
+      type: "stop",
+      limit: 5,
+    },
+  });
+
+  assert.notEqual(search.isError, true);
+
+  const searchData = searchPlacesResultSchema.parse(
+    search.structuredContent,
+  );
+
+  assert.equal(searchData.provider, "transitous");
+  assert.equal(searchData.results.length, 1);
+
+  const station = searchData.results[0]!;
+
+  assert.equal(station.id, "fixture-stop-1");
+  assert.equal(station.type, "stop");
+  assert.equal(station.locality, "Braunschweig");
+  assert.equal(station.region, "Niedersachsen");
+  assert.equal(station.timezone, "Europe/Berlin");
+  assert.ok(station.modes.includes("REGIONAL_RAIL"));
+
+  console.log("PASS: Authenticated mobility_search_places");
+
+  const cached = await client.callTool({
+    name: "mobility_search_places",
+    arguments: {
+      query: "Braunschweig Hauptbahnhof",
+      type: "all",
+      limit: 10,
+    },
+  });
+
+  assert.notEqual(cached.isError, true);
+
+  const cachedData = searchPlacesResultSchema.parse(
+    cached.structuredContent,
+  );
+
+  assert.equal(cachedData.results.length, 2);
+  assert.equal(cachedData.results[0]?.type, "stop");
+  assert.equal(cachedData.results[1]?.type, "place");
+
+  console.log("PASS: Cached search with different filter");
+
+  // Allow the local request interval to elapse so invalid
+  // arguments cannot pass this test merely due to rate limiting.
+  await new Promise(resolve => setTimeout(resolve, 1100));
+
+  for (const args of [
+    { query: "a" },
+    { query: "Invalid limit", limit: 100 },
+    { query: "Invalid type", type: "unknown" },
+    { query: "Unexpected field", extra: true },
+  ]) {
+    const invalidSearch = await client.callTool({
+      name: "mobility_search_places",
+      arguments: args,
+    });
+
+    assert.equal(invalidSearch.isError, true);
+  }
+
+  console.log("PASS: Invalid search arguments rejected");
+
+  const failure = await client.callTool({
+    name: "mobility_search_places",
+    arguments: {
+      query: "Provider failure",
+    },
+  });
+
+  assert.equal(failure.isError, true);
+
+  const failureContent = z.array(
+    z.object({
+      type: z.literal("text"),
+      text: z.string(),
+    }),
+  ).parse(failure.content);
+
+  assert.deepEqual(
+    JSON.parse(failureContent[0]!.text),
+    {
+      code: "UNAVAILABLE",
+      message: "Transitous is temporarily unavailable",
+      retryable: true,
+    },
+  );
+
+  console.log("PASS: Provider failure handled safely");
+
 } finally {
   await client.close();
 }
