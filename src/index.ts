@@ -6,8 +6,8 @@ import {
 
 import {
   toNodeHandler,
-  localhostHostValidation,
-  localhostOriginValidation,
+  hostHeaderValidation,
+  originValidation,
 } from "@modelcontextprotocol/node";
 
 import { config } from "./config.ts";
@@ -16,8 +16,8 @@ import { createMcpServer } from "./server.ts";
 const mcpHandler = createMcpHandler(createMcpServer);
 const nodeHandler = toNodeHandler(mcpHandler);
 
-const validateHost = localhostHostValidation();
-const validateOrigin = localhostOriginValidation();
+const validateHost = hostHeaderValidation([...config.allowedHostnames]);
+const validateOrigin = originValidation([...config.allowedHostnames]);
 
 const server = createServer(async (req, res) => {
   if (!validateHost(req, res) || !validateOrigin(req, res)) {
