@@ -1,6 +1,5 @@
 import * as z from "zod/v4";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 
@@ -10,6 +9,8 @@ import {
 } from "@modelcontextprotocol/client";
 
 import { config } from "../src/config.ts";
+import { createHttpServer } from "../src/http-server.ts";
+import { createOAuthFixture } from "./helpers/oauth.ts";
 
 const pingResultSchema = z.strictObject({
   service: z.literal(config.service),
@@ -21,45 +22,32 @@ const pingResultSchema = z.strictObject({
 });
 
 test("MCP integration", { timeout: 30_000 }, async (t) => {
-  const server = spawn(process.execPath, ["src/index.ts"], {
-    stdio: ["ignore", "pipe", "inherit"],
-  });
+  const fixture = await createOAuthFixture();
 
-  const baseUrl = `http://${config.host}:${config.port}`;
+  const { server, close } = createHttpServer(
+    fixture.authConfig,
+    fixture.verifyToken,
+  );
+
+  const token = await fixture.sign();
 
   const client = new Client({
     name: "mrcsx-mobility-test",
-    version: "0.1.0",
+    version: config.version,
   });
 
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+
+  const address = server.address();
+
+  assert.ok(address && typeof address !== "string");
+
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
   try {
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error("Server startup timed out"));
-      }, 5000);
-
-      let output = "";
-
-      server.stdout.on("data", (chunk) => {
-        output += chunk.toString();
-
-        if (output.includes("MCP:")) {
-          clearTimeout(timer);
-          resolve();
-        }
-      });
-
-      server.once("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-
-      server.once("exit", (code) => {
-        clearTimeout(timer);
-        reject(new Error(`Server exited: ${code}`));
-      });
-    });
-
     await t.test("Health endpoint", async () => {
       const response = await fetch(`${baseUrl}/health`);
 
@@ -76,6 +64,13 @@ test("MCP integration", { timeout: 30_000 }, async (t) => {
       await client.connect(
         new StreamableHTTPClientTransport(
           new URL(`${baseUrl}/mcp`),
+          {
+            requestInit: {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            },
+          },
         ),
       );
     });
@@ -160,7 +155,7 @@ test("MCP integration", { timeout: 30_000 }, async (t) => {
     try {
       await client.close();
     } finally {
-      server.kill("SIGTERM");
+      await close();
     }
   }
 });
