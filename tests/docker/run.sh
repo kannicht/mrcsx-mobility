@@ -122,6 +122,24 @@ docker run -d \
     "$IMAGE" \
     node /fixture/jwks-server.mjs
 
+echo "==> Prüfe fehlende Transitous-Konfiguration"
+
+STATUS=0
+
+OUTPUT=$(docker run --rm --network none \
+    -e MOBILITY_OAUTH_ISSUER=https://oauth-fixture:3443 \
+    -e MOBILITY_OAUTH_RESOURCE=https://mobility.example.test/mcp \
+    -e MOBILITY_OAUTH_JWKS_URI=https://oauth-fixture:3443/.well-known/jwks.json \
+    -e MOBILITY_OAUTH_SCOPE=mobility:read \
+    -e MOBILITY_OAUTH_CLIENT_ID=11111111-1111-4111-8111-111111111111 \
+    -e MOBILITY_OAUTH_ALLOWED_SUBJECT=22222222-2222-4222-8222-222222222222 \
+    "$IMAGE" 2>&1) || STATUS=$?
+
+test "$STATUS" -eq 1
+grep -q "Invalid Transitous configuration" <<< "$OUTPUT"
+
+echo "PASS: Missing Transitous configuration rejected"
+
 echo "==> Starte Mobility-Testcontainer"
 
 docker run -d \
@@ -143,6 +161,9 @@ docker run -d \
     -e MOBILITY_OAUTH_SCOPE=mobility:read \
     -e MOBILITY_OAUTH_CLIENT_ID=11111111-1111-4111-8111-111111111111 \
     -e MOBILITY_OAUTH_ALLOWED_SUBJECT=22222222-2222-4222-8222-222222222222 \
+    -e MOBILITY_TRANSITOUS_BASE_URL=https://oauth-fixture:3443 \
+    -e MOBILITY_TRANSITOUS_USER_AGENT=mrcsx-mobility-docker-test/0.3.0 \
+    -e MOBILITY_TRANSITOUS_TIMEOUT_MS=5000 \
     -p 127.0.0.1::3100 \
     "$IMAGE"
 
@@ -199,6 +220,28 @@ echo "==> Führe Docker-Smoke-Tests aus"
 
 node tests/docker/smoke.ts "$FIXTURE_DIR" "$BASE_URL"
 
+echo "==> Prüfe tatsächliche Provider-Anfragen"
+
+docker exec "$MOBILITY_CONTAINER" node --input-type=module -e '
+    import assert from "node:assert/strict";
+
+    const response = await fetch(
+        new URL(
+            "/fixture/stats",
+            process.env.MOBILITY_TRANSITOUS_BASE_URL
+        ),
+        { signal: AbortSignal.timeout(5000) }
+    );
+
+    assert.equal(response.status, 200);
+
+    const data = await response.json();
+
+    assert.equal(data.geocodeRequests, 2);
+
+    console.log("PASS: Exactly two external geocode requests");
+'
+
 echo "==> Container-Ressourcenverbrauch"
 
 docker stats --no-stream \
@@ -206,4 +249,4 @@ docker stats --no-stream \
     "$JWKS_CONTAINER"
 
 echo
-echo "OK - Docker OAuth smoke tests passed"
+echo "OK - Docker OAuth and Transitous smoke tests passed"

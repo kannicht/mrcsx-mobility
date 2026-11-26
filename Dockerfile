@@ -11,7 +11,7 @@ RUN npm ci --omit=dev --ignore-scripts \
 FROM node:24-bookworm-slim@sha256:873f586f3794f52281bd039bf02c048a0be08fde619338f9941bad1eb6b34530 AS runtime
 
 LABEL org.opencontainers.image.title="mrcsx-mobility"
-LABEL org.opencontainers.image.version="0.2.0"
+LABEL org.opencontainers.image.version="0.3.0"
 LABEL org.opencontainers.image.description="Self-hosted mobility MCP server"
 
 ENV NODE_ENV=production \
