@@ -1,0 +1,130 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.16.0'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Security audit
+        run: npm audit --audit-level=high
+
+      - name: Type checking and integration tests
+        run: npm run check
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --tag mrcsx-mobility:ci \
+            .
+
+      - name: Start test container
+        run: |
+          docker run -d \
+            --name mobility-ci \
+            --init \
+            --read-only \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges:true \
+            --memory=256m \
+            --cpus=1 \
+            --pids-limit=128 \
+            -e MOBILITY_PUBLIC_HOST=mobility.mrcsx.de \
+            -p 127.0.0.1:3100:3100 \
+            mrcsx-mobility:ci
+
+      - name: Wait for health endpoint
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3100/health\; then
+              echo
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Test container MCP endpoint
+        run: |
+          node --input-type=module <<'JS'
+          import assert from "node:assert/strict";
+          import { randomUUID } from "node:crypto";
+          import {
+            Client,
+            StreamableHTTPClientTransport,
+          } from "@modelcontextprotocol/client";
+
+          const client = new Client({
+            name: "mobility-ci",
+            version: "0.1.0",
+          });
+
+          try {
+            await client.connect(
+              new StreamableHTTPClientTransport(
+                new URL("http://127.0.0.1:3100/mcp"),
+              ),
+            );
+
+            const { tools } = await client.listTools();
+
+            assert.deepEqual(
+              tools.map(tool => tool.name),
+              ["mobility_ping"],
+            );
+
+            const nonce = randomUUID();
+
+            const result = await client.callTool({
+              name: "mobility_ping",
+              arguments: { nonce },
+            });
+
+            assert.notEqual(result.isError, true);
+            assert.equal(result.structuredContent?.nonce, nonce);
+            assert.equal(result.structuredContent?.status, "ok");
+            assert.equal(
+              result.structuredContent?.service,
+              "mrcsx-mobility",
+            );
+
+            console.log("Container MCP test passed");
+          } finally {
+            await client.close();
+          }
+          JS
+
+      - name: Container logs
+        if: always()
+        run: docker logs mobility-ci || true
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f mobility-ci || true
